@@ -2,9 +2,12 @@ from flask import render_template, request, redirect, url_for, flash , Blueprint
 from functools import wraps
 from werkzeug.utils import secure_filename
 from . import db  
+import sqlite3
+from .models import  Lawyer , Rating , Admin , Appointment
+
 
 import os
-from .models import db, Lawyer , Rating , Admin , Appointment
+from .models import  Lawyer , Rating , Admin , Appointment
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif'}
 
 def allowed_file(filename):
@@ -70,7 +73,7 @@ def register():
        
         existing_lawyer = Lawyer.query.filter_by(email=email).first()
         if existing_lawyer:
-            flash('Email already registered')
+            print('Email already registered')
             return redirect(url_for('auth.register'))
 
         if password != confirm_password:
@@ -192,22 +195,31 @@ def lawyer_details(lawyer_id):
 
 
 
-@auth_bp.route('/login', methods=['GET', 'POST'])
+@auth_bp.route('/login', methods=['GET', 'POST' , 'OPTIONS'])
 def login():
     if request.method == 'POST':
-        session.clear()
-        email = request.form.get('email')
-        password = request.form.get('password')
 
+        session.clear()
+        data = request.get_json()
+        email = data.get('email')
+        password = data.get('password')
+        print(email)
         existing_lawyer = Lawyer.query.filter_by(email=email).first()
         admin = Admin.query.filter_by(email=email).first()
-        
+        print("Existing lawyer:", existing_lawyer)
 
+        #if existing_lawyer and existing_lawyer.check_password(password):
+            #session['user_id'] = existing_lawyer.id
+            #session['role'] = existing_lawyer.role
+            #print(session)
+            #return redirect(url_for('auth.profile'))
+        
         if existing_lawyer and existing_lawyer.check_password(password):
             session['user_id'] = existing_lawyer.id
-            session['role'] = existing_lawyer.role
-            print(session)
-            return redirect(url_for('auth.profile'))
+            session['role'] = 'lawyer'
+            session['lawyer_email'] = existing_lawyer.email  # Store additional info (e.g., email) in the session
+            return jsonify({'success': True, 'message': 'Login successful'})
+
         elif admin and admin.check_password(password):
             session.clear()
             session['user_id'] = admin.id
@@ -220,28 +232,43 @@ def login():
 
 
 
-@auth_bp.route('/profile')
-@login_required(role='lawyer')
-def profile():
-    user_id = session.get('user_id')
-    
-    if user_id is None:
-        flash('Please log in to access this page', 'danger')
-        return redirect(url_for('auth.login'))
-    
-    role = session.get('role')
-    if role == 'lawyer':
-        user = Lawyer.query.get(user_id)
-        if user:
-            return render_template('profile.html', user=user)
-        else:
-            flash('User not found', 'danger')
-            return redirect(url_for('main.index'))
-    elif role == 'admin':
-        return render_template('admindash.html')  # Add a separate template for admin profile
+@auth_bp.route('/profile/<int:user_id>')
+
+def profile(user_id):
+    #current_user_id = session.get('user_id')
+
+    # Check if the logged-in user matches the requested user
+    #if current_user_id is None or current_user_id != user_id:
+        #flash('You do not have access to this page', 'danger')
+        #return redirect(url_for('auth.login'))
+
+    #role = session.get('role')
+    #if role == 'lawyer':
+    user = Lawyer.query.get(user_id)
+    et = Rating.query.filter_by(lawyer_id=user_id).all()
+        
+    if user:
+        return jsonify({
+            'id': user.id,
+        'nom': user.firstName,
+        'wilaya': user.wilaya,
+        'specialites': user.speciality,
+        'adresse': user.address,
+        'numero': user.phoneNumber,
+        'langues': user.languages,
+        'photo': user.photo,
+        'about': user.about,
+        'etoiles': et.count(Rating.rating)
+            })
     else:
-        flash('You do not have access to this page', 'danger')
-        return redirect(url_for('auth.login'))
+        flash('User not found', 'danger')
+        return redirect(url_for('main.index'))
+    #elif role == 'admin':
+    #return render_template('admindash.html')  # Add a separate template for admin profile
+    #else:
+        #flash('You do not have access to this page', 'danger')
+        #return redirect(url_for('auth.login'))
+
 
     
     
@@ -390,7 +417,6 @@ def confirm_appointment(appointment_id):
     appointment.status = 'accepted'
     db.session.commit()
 
-    # Notify user via email (implement email sending logic here)
 
     flash('Appointment confirmed successfully. User notified.', 'success')
     return redirect(url_for('auth.appointment_details', appointment_id=appointment.id))
@@ -409,3 +435,108 @@ def delete_appointment(appointment_id):
 
     flash('Appointment deleted successfully. User notified.', 'success')
     return redirect(url_for('auth.lawyer_appointments', lawyer_id=appointment.lawyer.id))
+
+
+@auth_bp.route('/recherche', methods=['POST'])
+def recherche():
+    if request.method == "POST":
+        data = request.json  
+        wilaya = data.get('wilaya')
+        address = data.get('address')
+        languages = data.get('languages')
+        print(wilaya)
+        query = Lawyer.query
+
+        if wilaya:
+            query = query.filter(Lawyer.wilaya == wilaya)
+        if address:
+            query = query.filter(Lawyer.address == address)
+        if languages:
+            query = query.filter(Lawyer.speciality == languages)
+
+        result = query.all()
+
+        serialized_result = [
+            {'firstName':lawyer.firstName,'wilaya': lawyer.wilaya, 'address': lawyer.address, 'languages': lawyer.languages}
+            for lawyer in result
+        ]
+
+        return jsonify({'lawyers': serialized_result})
+    else:
+        return jsonify({'error': 'Invalid HTTP method'})
+
+
+
+
+#commentaire
+def creer_table_commentaires():
+    conn = sqlite3.connect('lawyer.db')
+    cur = conn.cursor()
+
+    cur.execute("""CREATE TABLE IF NOT EXISTS commentaires (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    lawyer_id INTEGER,
+                    firstName TEXT,
+                    email TEXT,
+                    comment TEXT,
+                    rating TEXT
+                )""")
+    
+    conn.commit()
+    conn.close()
+
+def ajouter_commentaire(lawyer_id, firstName, email, comment, rating):
+    conn = sqlite3.connect('lawyer.db')
+    cur = conn.cursor()
+
+    cur.execute("""INSERT INTO commentaires (lawyer_id, firstName, email, comment, rating)
+                   VALUES (?, ?, ?, ?, ?)""", (lawyer_id, firstName, email, comment, rating))
+
+    conn.commit()
+    conn.close()
+# Créer la table
+#cree_table()
+
+# Ajouter les avocats
+#ajouter_avocats()
+
+def afficher_commentaires_lawyer(id_lawyer):
+    conn = sqlite3.connect('lawyer.db')
+    cur = conn.cursor()
+
+    # Sélectionner tous les commentaires pour un avocat spécifique
+    cur.execute("SELECT * FROM commentaires WHERE lawyer_id=?", (id_lawyer,))
+    commentaires = cur.fetchall()
+    print(commentaires)
+    conn.close()
+    return render_template("commentaire.html", commentaires=commentaires)
+
+@auth_bp.route("/commentaire/<int:id_lawyer>", methods=['GET', 'POST'])
+def enregistrer_commentaires(id_lawyer):
+    creer_table_commentaires()
+
+    # Récupérer les commentaires existants pour cet avocat
+    commentaires_existants = afficher_commentaires_lawyer(id_lawyer=id_lawyer)
+
+    if request.method == "POST":
+        donnees = request.form
+        firstName = donnees.get('firstName')
+        email = donnees.get('email')
+        comment = donnees.get('comment')
+        rating = donnees.get('rating')
+
+        # Ajouter le commentaire dans la base de données
+        ajouter_commentaire(id_lawyer, firstName, email, comment, rating)
+
+        # Récupérer les données pour la page de confirmation
+        confirmation = {
+            'firstName': firstName,
+            'email': email,
+            'comment': comment,
+            'rating': rating
+        }
+
+        # Rediriger vers la page de confirmation
+        return render_template("commentaire.html", confirmation=confirmation, id_lawyer=id_lawyer, commentaires_existants=commentaires_existants)
+
+    return render_template("commentaire.html", id_lawyer=id_lawyer, commentaires_existants=commentaires_existants)

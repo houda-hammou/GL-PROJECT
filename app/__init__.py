@@ -16,5 +16,6 @@ app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(days=1)
 db.init_app(app)
 CORS(app)
 
+
 app.register_blueprint(auth_bp)
 
